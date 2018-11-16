@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+
+NIX_GIT_URL="https://github.com/NixOS/nix.git"
+NIX_PREINSTALLER_URL="https://nixos.org/nix/install"
+NIX_PREINSTALLER_CONTENT=""
+NIX_TARBALL_URL_FORMAT="https://nixos.org/releases/nix/nix-%s/nix-%s-%s.tar.bz2"
+NIX_TARBALL_URL=""
+NIX_TARBALL_HASH=""
+NIX_TARBALL_OFFICIAL_HASH=""
+NIX_TARBALL=""
+NIX_VERSION=""
+NIX_INSTALLER_FILE="install"
+NIX_INSTALLER_ARGS="$@"
+MULTI_USER_INSTALLER_FILE="install-multi-user"
+MULTI_USER_INSTALLER_BAK_PATTERN="%s.bak"
+ARCH_SYSTEM=""
+NIX_TEMP_TARBALL_DIR=""
+NIX_TEMP_TARBALL_DIR_FORMAT="nix-binary-tarball-unpack.XXXXXXXXXX"
+NIX_EXTRACT_PATH=""
+NIX_EXTRACT_PATH_FORMAT="nix-%s-%s"
+NIX_UID_FOR_CORE_DEF=""
+NIX_INSTALLER_MAIN_FUNCTION=""
+
+alias grep="grep --color=never"
+
+function oops()
+{
+    echo "$0:" "$@" >&2
+    #exit 1
+    return 1
+}
+
+function nix_current_tarball ()
+{
+    local preinstaller_content_0
+    local version_0
+    local arch_0
+    local url_format_0
+    local url_0
+    local official_hash_0
+    local hash_0
+    local temp_dir_0
+    local tarball_0
+    local tarball_name_0
+    local temp_dir_format_0
+    local git_url_0
+    
+    function _preinstaller_content ()
+    {
+        local url_1
+        url_1="$1"
+        
+        echo -n "Downloading the default installer... "
+        preinstaller_content_0=$(wget -q "$url_1" -O-)
+        echo "done"
+    }
+    function _git_last_version ()
+    {
+        # Args
+        local git_url_1
+        git_url_1="$1"
+        
+        function __parse_revision ()
+        {
+            # Args
+            local git_url_2
+            git_url_2="$1"
+            
+            git ls-remote -t "$git_url_2" |
+                awk 'match($2, /refs\/tags\/(.*)(\^\{\})/, ary) {print ary[1]}' |
+                sort -nr |
+                head -n 1
+        }
+
+        version_0=$(__parse_revision "$git_url_1")
+    }
+    function _format_url ()
+    {
+        # Args
+        local url_format_1 version_1  arch_1
+        url_format_1="$1"
+        version_1="$2"
+        arch_1="$3"
+        
+        function __inner ()
+        {
+            printf "$url_format_1" "$version_1" "$version_1" "$arch_1"
+        }
+        
+        url_0=$(__inner)
+    }
+    function _official_arch_hash ()
+    {
+        # Args
+        local arch_1 preinstaller_content_1
+        # Local vars
+        local official_hash_1
+        local oldIFS="$IFS"
+        arch_1="$1"
+        preinstaller_content_1="$2"
+        
+        function __parse_hash ()
+        {
+            # Args
+            local arch_2 preinstaller_content_2
+            arch_2="$1"
+            shift
+            preinstaller_content_2="$@"
+            
+            echo "$preinstaller_content_2" |
+                grep "$arch_2" |
+                awk -F';' '{match($2, /[A-Fa-f0-9]{64}/, a); print a[0]}'
+        }
+        official_hash_1=$(__parse_hash "$arch_1" "$preinstaller_content_1")
+        official_hash_0="$official_hash_1"
+    }
+    function _arch_system ()
+    {
+        # Local vars
+        local arch_1 os machine system
+        os=$(uname -s)
+        machine=$(uname -m)
+        system="${os}.${machine}"
+        
+        function __format_arch_system ()
+        {
+            # Local vars
+            local arch_2
+            arch_2="$1"
+            
+            case "$arch_2" in
+                Linux.x86_64)
+                    echo -n "x86_64-linux"
+                    ;;
+                Linux.i?86)
+                    echo -n "i686-linux"
+                    ;;
+                Linux.aarch64)
+                    echo -n "aarch64-linux"
+                    ;;
+                Darwin.x86_64)
+                    echo -n "x86_64-darwin"
+                    ;;
+                *) oops "Sorry, there is no binary distribution of Nix for your platform"
+                ;;
+            esac
+        }
+        
+        arch_1=$(__format_arch_system "$system")
+        arch_0="$arch_1"
+    }
+    function _download_and_verify_tarball ()
+    {
+        # Args
+        local url_1 official_hash_1 tarball_name_1 temp_dir_format_1
+        # Vars
+        local tarball_1 hash_1 temp_dir_1
+        
+        function __temp_dir ()
+        {
+            # Args
+            local temp_dir_format_2
+            # Vars
+            local temp_dir_2
+            
+            temp_dir_format_2="$1"
+            temp_dir_2=$(mktemp -d -t "$temp_dir_format_2")
+            
+            if [ -w "$temp_dir_2" ]; then
+                temp_dir_1="$temp_dir_2"
+            else
+                oops "Can't create temporary directory for " \
+                    " downloading the Nix binary tarball"
+            fi
+        }
+        function __download ()
+        {
+            # Args
+            local url_2 temp_dir_2 tarball_name_2
+            # Vars
+            local tarball_2
+            
+            url_2="$1"
+            temp_dir_2="$2"
+            tarball_name_2="$3"
+            tarball_2="${temp_dir_2}/nix-latest.tar.bz2"
+            
+            echo -n "Downloading the tarball... "
+            wget -q "$url_2" -O "$tarball_2"
+            echo "done"
+            tarball_1="$tarball_2"
+
+            return 0
+        }
+        function __sha256sum ()
+        {
+            # Args
+            local tarball_2 url_2
+            # Vars
+            local hash_2
+            tarball_2="$1"
+            url_2="$2"
+            
+            if type sha256sum > /dev/null 2>&1; then
+                hash_2=$(sha256sum -b "$tarball_2" | cut -c1-64)
+            elif type shasum > /dev/null 2>&1; then
+                hash_2=$(shasum -a 256 -b "$tarball_2" | cut -c1-64)
+            elif type openssl > /dev/null 2>&1; then
+                hash_2=$(openssl dgst -r -sha256 "$tarball_2" | cut -c1-64)
+            else
+                oops "cannot verify the SHA-256 hash of \'$url_2\'; " \
+                    "you need one of 'shasum', 'sha256sum', or 'openssl'"
+            fi
+            
+            hash_1="$hash_2"
+        }
+        function __verify_hashes ()
+        {
+            # Args
+            local official_hash_2 hash2 url_2
+            official_hash_2="$1"
+            hash_2="$2"
+            url_2="$3"
+            
+            if [ "$official_hash_2" != "$hash_2" ]; then
+                oops "SHA-256 hash mismatch in '$url_2'; expected $official_hash_2, got $hash_2"
+            fi
+        }
+        
+        url_1="$1"
+        official_hash_1="$2"
+        tarball_name_1="$3"
+        temp_dir_format_1="$4"
+        
+        # "$official_arch_hash_1"
+        __temp_dir "$temp_dir_format_1"
+        __download "$url_1" "$temp_dir_1" "$tarball_name_1"
+        __sha256sum "$tarball_1" "$url_1"
+        __verify_hashes "$official_hash_1" "$hash_1" "$url_1"
+        
+        tarball_0="$tarball_1"
+        hash_0="$hash_1"
+        temp_dir_0="$temp_dir_1"
+    }
+    function _export_consts ()
+    {
+        local version_1
+        local preinstaller_content_1
+        local arch_1
+        local url_1
+        local official_hash_1
+        local tarball_1
+        version_1="$1"
+        preinstaller_content_1="$2"
+        arch_1="$3"
+        url_1="$4"
+        official_hash_1="$5"
+        tarball_1="$6"
+        
+        export NIX_VERSION="$version_1"
+        export NIX_PREINSTALLER_CONTENT="$preinstaller_content_1"
+        export ARCH_SYSTEM="$arch_1"
+        export NIX_TARBALL_URL="$url_1"
+        export NIX_TARBALL_OFFICIAL_HASH="$official_hash_1"
+        export NIX_TARBALL="$tarball_1"
+    }
+    
+    url_format_0="$NIX_TARBALL_URL_FORMAT"
+    temp_dir_format_0="$NIX_TEMP_TARBALL_DIR_FORMAT"
+    git_url_0="$NIX_GIT_URL"
+
+    _preinstaller_content "$NIX_PREINSTALLER_URL"
+    _git_last_version "$git_url_0"
+    
+    if echo "$preinstaller_content_0" |
+       grep "$version_0" >/dev/null; then
+        _arch_system
+        _format_url "$url_format_0" "$version_0" "$arch_0"
+        _official_arch_hash "$arch_0" "$preinstaller_content_0"
+        
+        _download_and_verify_tarball "$url_0" \
+                                     "$official_hash_0" \
+                                     "$tarball_name_0" \
+                                     "$temp_dir_format_0"
+        _export_consts "$version_0" \
+                       "$preinstaller_content_0" \
+                       "$arch_0" \
+                       "$url_0" \
+                       "$official_hash_0" \
+                       "$tarball_0"
+    else
+        oops "PreInstaller version mismatch with version $version"
+    fi
+}
+function nix_extract_tarball ()
+{
+    local tarball_0 dir_0 extract_path_pattern_0 version_0 arch_0 extract_path_0
+    
+    function _export_consts ()
+    {
+        # Args
+        local tallbar_dir_1 extracted_dir_1
+        tallbar_dir_1="$1"
+        extracted_dir_1="$2"
+        
+        export NIX_TEMP_TARBALL_DIR="$tallbar_dir_1"
+        export NIX_EXTRACT_PATH="$extracted_dir_1"
+    }
+    function _extracted_dir ()
+    {
+        local tarball_dir_1 extract_path_1
+        tarball_dir_1="$1"
+        extract_path_1="$2"
+        
+        function __inner ()
+        {
+            ls -d --color=never "${tarball_dir_1}/${extract_path_1}/" |
+                head -n 1
+        }
+        
+        realpath "$(__inner)"
+    }
+    tarball_0="$NIX_TARBALL"
+    tarball_dir_0=$(dirname "$tarball_0")
+    extract_path_pattern_0="$NIX_EXTRACT_PATH_FORMAT"
+    version_0="$NIX_VERSION"
+    arch_0="$ARCH_SYSTEM"
+    extract_path_0=$(printf "$extract_path_pattern_0" "$version_0" "$arch_0")
+    
+    echo -n "Extracting tarball... "
+    < "$tarball_0" bzcat | tar -xf - -C "$tarball_dir_0" ||
+        oops "Failed to unpack \'$tarball_0\'"
+    extracted_dir_0=$(_extracted_dir "$tarball_dir_0" "$extract_path_0")
+    echo "done"
+
+    _export_consts "$tarball_dir_0" "$extracted_dir_0"
+}
+function patch_multi_user_installer ()
+{
+    # Local vars
+    local bak_pattern_0
+    local file_0
+    local bak_0
+    local extracted_dir_0
+    local inject_fn_0
+    local fn_name_0
+    
+    # Function to inject in multi-user-installer
+    function nix_uid_for_core ()
+    {
+        # Local vars
+        local uid_min_1 uid_max_1
+        uid_min_1=$(awk '/^#SYS_UID_MIN/{print $2}' /etc/login.defs)
+        uid_max_1=$(awk '/^#SYS_UID_MAX/{print $2}' /etc/login.defs)
+        uid_max_1=$((uid_max_1 - $1 - 1))
+        
+        awk -F: "{uid[\$3]=1}END{for(x=$uid_max_1; x>=$uid_min_1; x--) {if(uid[x] != \"\"){}else{print x; exit;}}}" /etc/passwd
+    }
+    function _check_file_patcheable ()
+    {
+        # Args
+        local file_1
+        file_1="$1"
+        
+        tail -1 "$file_1" | grep "^main$" >/dev/null
+        return $?
+    }
+    # Add trailing newline if not present
+    function _add_trailing_newline ()
+    {
+        # Args
+        local file_1
+        # Local vars
+        local file_tail_1
+        file_1="$1"
+        file_tail_1=$(tail -c1 "$file_1")
+        
+        if [[ -n "$file_tail_1" ]]; then
+            printf '\n' >> "$file_1"
+        fi
+    }
+    function _backup_installer ()
+    {
+        # Args
+        local file_1 bak_1
+        file_1="$1"
+        bak_1="$2"
+        
+        cp "$file_1" "$bak_1"
+    }
+    function _inject_function ()
+    {
+        # Args
+        local file bak_1 fn_name_1 def_1
+        file_1="$1"
+        bak_1="$2"
+        fn_name_1="$3"
+        def_1="$4"
+        
+        echo "Patching the installer... "
+        _add_trailing_newline "$file_1"
+        cat <(sed '$ d' "$bak_1") \
+            <(echo -e "$def_1\n") \
+            <(echo "$fn_name_1") \
+            > $file_1
+        echo "done"
+    }
+    
+    bak_pattern_0="$MULTI_USER_INSTALLER_BAK_PATTERN"
+    extracted_dir_0="${NIX_EXTRACT_PATH}"
+    file_0="${extracted_dir_0}/${MULTI_USER_INSTALLER_FILE}"
+    bak_0=$(printf "$bak_pattern_0" "$file_0")
+    inject_fn_0="$(declare -f nix_uid_for_core)"
+    fn_name_0="main"
+
+    export NIX_UID_FOR_CORE_DEF="$inject_fn_0"
+    export NIX_INSTALLER_MAIN_FUNCTION="$fn_name_0"
+    
+    if _check_file_patcheable "$file_0"; then
+        _backup_installer "$file_0" "$bak_0"
+        _inject_function "$file_0" "$bak_0" "$fn_name_0" "$inject_fn_0"
+    else
+        oops "$0 is probably outdated"
+    fi
+}
+
+function launch_installation ()
+{
+    local installer_0 args_0 path_0
+    
+    function _installer ()
+    {
+        local path_0
+        path_0="$1"
+        nix_current_tarball
+        nix_extract_tarball
+        patch_multi_user_installer
+        installer_0="${NIX_EXTRACT_PATH}/${NIX_INSTALLER_FILE}"
+    }
+    function _install ()
+    {
+        local command
+        command="$1"
+        
+        echo "This command will be used:"
+        echo " > $command"
+        read -N 1 -p "Continue the installation (y/n)? " answer
+        case ${answer:0:1} in
+            y|Y )
+                echo -e "\bYes"
+                eval "$command"
+            ;;
+            * )
+                echo -e "\bNo"
+            ;;
+        esac
+    }
+    
+    # TODO
+    path_0=""
+    _installer
+    args_0="$NIX_INSTALLER_ARGS"
+    
+    _install "$installer_0 $args_0"
+}
+function cleanup_installation ()
+{
+    echo "Installer will be removed in 2 min"
+    sleep 120
+    local dir_0
+    dir_0="$1"
+    
+    rm -Rf "$dir_0"
+}
+
+launch_installation
+
